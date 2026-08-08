@@ -19,6 +19,9 @@ FLASH_FILES = (
     ("0x8000", "partition-table.bin", Path("partition_table/partition-table.bin")),
     ("0xd000", "ota_data_initial.bin", Path("ota_data_initial.bin")),
 )
+EXTRA_FILES = (
+    ("elf", "StopWatch-UserDemo.elf", Path("StopWatch-UserDemo.elf")),
+)
 
 
 def sha256(path: Path) -> str:
@@ -64,6 +67,11 @@ def main() -> None:
 
     for _, name, relative in FLASH_FILES:
         shutil.copy2(args.build_dir / relative, bundle_dir / name)
+
+    for _, name, relative in EXTRA_FILES:
+        source = args.build_dir / relative
+        if source.is_file():
+            shutil.copy2(source, bundle_dir / name)
 
     flash_args = ["--flash_mode dio --flash_freq 80m --flash_size 16MB"]
     flash_args.extend(f"{offset} {name}" for offset, name, _ in FLASH_FILES)
