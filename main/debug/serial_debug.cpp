@@ -315,7 +315,7 @@ void SerialDebug::handleLine(char* line)
             return;
         }
         const usage_link::Snapshot usage = usage_link::GetUsageLink().snapshot();
-        char details[160]                = {};
+        char details[256]                = {};
         std::snprintf(details, sizeof(details),
                       "configured=%d wifi=%d link=%d claude_session=%d claude_week=%d codex_session=%d codex_week=%d",
                       usage.configured ? 1 : 0, usage.wifiConnected ? 1 : 0, usage.linkOk ? 1 : 0,

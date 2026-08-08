@@ -22,7 +22,6 @@ via ctypes); /usage works anywhere.
 """
 
 import json
-import os
 import sys
 import threading
 import time
@@ -111,6 +110,7 @@ def fetch_claude_usage() -> dict:
         except Exception:
             continue
     if not token:
+        _log("claude: no Claude Code credentials found (~/.claude/.credentials.json); is Claude Code installed and logged in?")
         return {}
 
     try:
@@ -125,6 +125,7 @@ def fetch_claude_usage() -> dict:
     except Exception as error:
         _log(f"claude usage fetch failed: {error}")
         return {}
+    _log(f"claude raw response: {json.dumps(payload)[:600]}")
 
     result = {}
     session = _first(payload, "five_hour", "session", "primary")
@@ -150,6 +151,7 @@ def fetch_codex_usage() -> dict:
     try:
         auth = json.loads(auth_path.read_text(encoding="utf-8"))
     except Exception:
+        _log("codex: no Codex CLI auth found (~/.codex/auth.json); is Codex CLI installed and logged in?")
         return {}
     tokens = _first(auth, "tokens") or {}
     token = _first(tokens, "access_token", "accessToken") or _first(auth, "access_token")
@@ -176,21 +178,32 @@ def fetch_codex_usage() -> dict:
             _log(f"codex usage fetch failed ({url.rsplit('/', 1)[-1]}): {error}")
     if not isinstance(payload, dict):
         return {}
+    _log(f"codex raw response: {json.dumps(payload)[:600]}")
 
-    rate_limits = _first(payload, "rate_limits", "rateLimits") or payload
-    session = _first(rate_limits, "primary", "five_hour", "session")
-    week = _first(rate_limits, "secondary", "seven_day", "week")
+    rate_limits = _first(payload, "rate_limit", "rate_limits", "rateLimits") or payload
+    candidates = [
+        _first(rate_limits, "primary_window", "primary", "five_hour", "session"),
+        _first(rate_limits, "secondary_window", "secondary", "seven_day", "week"),
+    ]
     result = {}
-    for name, node in (("session", session), ("week", week)):
+    for node in candidates:
         if not isinstance(node, dict):
             continue
         pct = _first(node, "used_percent", "utilization", "percent")
-        reset = _first(node, "resets_at", "reset_at", "resets_in_seconds")
-        if isinstance(reset, (int, float)) and reset < 10_000_000:
-            reset = time.time() + float(reset)
+        reset = _first(node, "reset_at", "resets_at")
+        if reset is None:
+            relative = _first(node, "reset_after_seconds", "resets_in_seconds")
+            if isinstance(relative, (int, float)):
+                reset = time.time() + float(relative)
         meter = _meter(pct, reset)
-        if meter:
-            result[name] = meter
+        if not meter:
+            continue
+        # Windows self-describe their span; <=6h counts as the session meter.
+        window_seconds = _first(node, "limit_window_seconds", "window_seconds")
+        name = "session" if isinstance(window_seconds, (int, float)) and window_seconds <= 21600 else "week"
+        if name in result:
+            name = "session" if name == "week" else "week"
+        result[name] = meter
     return result
 
 
@@ -348,9 +361,10 @@ def local_ip() -> str:
 def main() -> None:
     address = local_ip()
     _log(f"Stopwatch Micro companion on http://{address}:{PORT}")
+    _log("If that IP is a VPN address, check 'ipconfig' for the WLAN IPv4 instead.")
     _log("Configure the watch over USB serial:")
     _log("  debug wifi <ssid> <password>")
-    _log(f"  debug host {address} {PORT}")
+    _log(f"  debug host <PC-LAN-IP> {PORT}")
     _log("Then reboot the watch. Ctrl+C stops the companion.")
     usage_payload()  # warm the cache and surface provider errors early
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

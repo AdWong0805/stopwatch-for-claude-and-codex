@@ -18,6 +18,7 @@
 #include <freertos/task.h>
 #include <nvs_flash.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -156,8 +157,11 @@ void UsageLinkImpl::begin()
     esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &UsageLinkImpl::wifiEventHandler, this, nullptr);
 
     wifi_config_t wifi_config = {};
-    std::snprintf(reinterpret_cast<char*>(wifi_config.sta.ssid), sizeof(wifi_config.sta.ssid), "%s", _ssid);
-    std::snprintf(reinterpret_cast<char*>(wifi_config.sta.password), sizeof(wifi_config.sta.password), "%s", _password);
+    // memcpy with clamped length: the zero-initialized fields stay terminated
+    // and -Werror=format-truncation has nothing to complain about.
+    std::memcpy(wifi_config.sta.ssid, _ssid, std::min(std::strlen(_ssid), sizeof(wifi_config.sta.ssid) - 1));
+    std::memcpy(wifi_config.sta.password, _password,
+                std::min(std::strlen(_password), sizeof(wifi_config.sta.password) - 1));
     wifi_config.sta.scan_method       = WIFI_FAST_SCAN;
     wifi_config.sta.failure_retry_cnt = 3;
 
