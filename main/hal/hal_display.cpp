@@ -355,10 +355,13 @@ void Hal::lvgl_init()
     lv_display_set_driver_data(disp, _display.get());
     lv_display_set_flush_cb(disp, lvgl_flush_cb);
 
-    static uint8_t *buf1 = (uint8_t *)heap_caps_malloc(_display->width() * LV_BUFFER_LINE, MALLOC_CAP_SPIRAM);
-    static uint8_t *buf2 = (uint8_t *)heap_caps_malloc(_display->width() * LV_BUFFER_LINE, MALLOC_CAP_SPIRAM);
-    lv_display_set_buffers(disp, (void *)buf1, (void *)buf2, _display->width() * LV_BUFFER_LINE,
-                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+    // Buffer size must include bytes-per-pixel; the previous size covered
+    // only half the intended strip height (validated fix from Stopwatch-Micro).
+    const std::size_t draw_buffer_size = static_cast<std::size_t>(_display->width()) * LV_BUFFER_LINE *
+                                         LV_COLOR_FORMAT_GET_SIZE(lv_display_get_color_format(disp));
+    static uint8_t *buf1               = (uint8_t *)heap_caps_malloc(draw_buffer_size, MALLOC_CAP_SPIRAM);
+    static uint8_t *buf2               = (uint8_t *)heap_caps_malloc(draw_buffer_size, MALLOC_CAP_SPIRAM);
+    lv_display_set_buffers(disp, (void *)buf1, (void *)buf2, draw_buffer_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
     lvTouchpad = lv_indev_create();
     LV_ASSERT_MALLOC(lvTouchpad);
