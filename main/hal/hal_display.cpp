@@ -1,0 +1,486 @@
+/*
+ * SPDX-FileCopyrightText: 2026 M5Stack Technology CO LTD
+ *
+ * SPDX-License-Identifier: MIT
+ */
+#include "hal.h"
+#include "utils/settings/settings.h"
+#include <mooncake_log.h>
+#include <M5GFX.h>
+#include <lgfx/v1/panel/Panel_AMOLED.hpp>
+#include <smooth_ui_toolkit.hpp>
+#include <uitk/short_namespace.hpp>
+#include <esp_log.h>
+#include <esp_timer.h>
+#include <memory>
+
+static const std::string_view _tag = "HAL-Display";
+
+/* -------------------------------------------------------------------------- */
+/*                               Amoled display                               */
+/* -------------------------------------------------------------------------- */
+static constexpr gpio_num_t cfg_pin_sclk = GPIO_NUM_40;
+static constexpr gpio_num_t cfg_pin_io0  = GPIO_NUM_41;
+static constexpr gpio_num_t cfg_pin_io1  = GPIO_NUM_42;
+static constexpr gpio_num_t cfg_pin_io2  = GPIO_NUM_46;
+static constexpr gpio_num_t cfg_pin_io3  = GPIO_NUM_45;
+static constexpr gpio_num_t cfg_pin_cs   = GPIO_NUM_39;
+static constexpr gpio_num_t cfg_pin_te   = GPIO_NUM_38;
+static constexpr gpio_num_t cfg_pin_rst  = GPIO_NUM_NC;
+
+class Panel_CO5300 : public lgfx::Panel_AMOLED {
+public:
+    Panel_CO5300(void)
+    {
+        _cfg.memory_width = _cfg.panel_width = 480;
+        _cfg.memory_height = _cfg.panel_height = 480;
+        _write_depth                           = lgfx::color_depth_t::rgb565_2Byte;
+        _read_depth                            = lgfx::color_depth_t::rgb565_2Byte;
+    }
+
+    const uint8_t *getInitCommands(uint8_t listno) const override
+    {
+        static constexpr uint8_t list0[] = {
+            0x11, 0 + CMD_INIT_DELAY,
+            150,  // Sleep out
+            0xC4, 1,
+            0x80, 0x35,
+            1,    0x80,
+            0x44, 2,
+            0x01, 0xD2,  // Tear Effect Line = 0x1D2 == 466
+            0x53, 1,
+            0x20, 0x20,
+            0,    0x36,
+            1,    0,
+            0x51, 1,
+            0xA0, 0x29,
+            0,    0xff,
+            0xff  // end
+        };
+        switch (listno) {
+            case 0:
+                return list0;
+            default:
+                return nullptr;
+        }
+    }
+};
+
+class M5StopWatch : public M5GFX {
+    lgfx::Bus_SPI _bus_instance;
+    Panel_CO5300 _panel_instance;
+
+public:
+    M5StopWatch(void)
+    {
+    }
+
+    // static constexpr int in_i2c_port                   = 0;  // I2C_NUM_0
+
+    bool init_impl(bool use_reset, bool use_clear) override
+    {
+        {
+            auto cfg = _bus_instance.config();
+
+            cfg.freq_write = 80000000;
+            cfg.freq_read  = 10000000;  // irrelevant
+
+            cfg.pin_sclk = cfg_pin_sclk;
+            cfg.pin_io0  = cfg_pin_io0;
+            cfg.pin_io1  = cfg_pin_io1;
+            cfg.pin_io2  = cfg_pin_io2;
+            cfg.pin_io3  = cfg_pin_io3;
+
+            cfg.spi_host    = SPI2_HOST;
+            cfg.spi_mode    = 0;  // SPI_MODE0;
+            cfg.spi_3wire   = true;
+            cfg.dma_channel = SPI_DMA_CH_AUTO;
+
+            _bus_instance.config(cfg);
+            _panel_instance.setBus(&_bus_instance);
+        }
+
+        {
+            auto cfg         = _panel_instance.config();
+            cfg.pin_rst      = cfg_pin_rst;
+            cfg.pin_cs       = cfg_pin_cs;
+            cfg.panel_width  = 468;
+            cfg.panel_height = 466;
+            cfg.offset_x     = 6;
+            cfg.offset_y     = 0;
+
+            cfg.readable = false;
+
+            _panel_instance.config(cfg);
+        }
+
+        setPanel(&_panel_instance);
+
+        lgfx::pinMode(cfg_pin_te, lgfx::pin_mode_t::input_pullup);
+        // lgfx::i2c::init(in_i2c_port);
+
+        // io_expander.digitalWrite(PY32_L3B_EN_PIN, 1);
+        // io_expander.digitalWrite(PY32_OLED_RST_PIN, 1);
+
+        if (!LGFX_Device::init_impl(use_reset, use_clear)) return false;
+
+        // Let LVGL render every partial chunk into the M5GFX framebuffer first.
+        // The flush callback presents the accumulated dirty region once, after
+        // LVGL reports that the final chunk for the frame has been rendered.
+        enableFrameBuffer(false);
+
+        _panel_instance.setBrightness(128);
+
+        return true;
+    }
+
+    bool enableFrameBuffer(bool auto_display = false)
+    {
+        if (_panel_instance.initPanelFb()) {
+            auto fbPanel = _panel_instance.getPanelFb();
+            if (fbPanel) {
+                fbPanel->setBus(&_bus_instance);
+                fbPanel->setAutoDisplay(auto_display);
+                setPanel(fbPanel);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void disableFrameBuffer()
+    {
+        auto fbPanel = _panel_instance.getPanelFb();
+        if (fbPanel) {
+            _panel_instance.deinitPanelFb();
+            setPanel(&_panel_instance);
+        }
+    }
+
+    void setBrightness(uint8_t brightness)
+    {
+        _panel_instance.setBrightness(brightness);
+    }
+};
+
+static std::unique_ptr<M5StopWatch> _display;
+
+void Hal::display_init()
+{
+    mclog::tagInfo(_tag, "display init");
+
+    _display = std::make_unique<M5StopWatch>();
+    if (!_display->init()) {
+        mclog::tagError(_tag, "display init failed");
+        _display.reset();
+        ESP_ERROR_CHECK(ESP_FAIL);
+    }
+
+    // Load brightness from settings
+    auto brightness = getBackLightBrightness(true);
+    setBackLightBrightness(brightness, false);
+}
+
+void Hal::setBackLightBrightness(int brightness, bool saveToSettings)
+{
+    _bl_brightness = uitk::clamp(brightness, 0, 100);
+
+    int set_target = uitk::map_range(_bl_brightness, 0, 100, 0, 255);
+    _display->setBrightness(set_target);
+
+    if (saveToSettings) {
+        Settings settings(std::string(Hal::SettingsNs), true);
+        settings.SetInt("bl_lev", _bl_brightness);
+        mclog::tagInfo(_tag, "brightness saved to settings: {}", _bl_brightness);
+    }
+}
+
+int Hal::getBackLightBrightness(bool loadFromSettings)
+{
+    if (loadFromSettings) {
+        Settings settings(std::string(Hal::SettingsNs), false);
+        _bl_brightness = settings.GetInt("bl_lev", 80);
+        _bl_brightness = uitk::clamp(_bl_brightness, 10, 100);
+        mclog::tagInfo(_tag, "brightness loaded from settings: {}", _bl_brightness);
+    }
+    return _bl_brightness;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                  Touchpad                                  */
+/* -------------------------------------------------------------------------- */
+#include "drivers/cst820/cst820.h"
+
+static std::unique_ptr<Cst820> _cst820;
+
+void Hal::touchpad_init()
+{
+    mclog::tagInfo(_tag, "touchpad init");
+
+    ioe_tp_reset();
+
+    _cst820 = std::make_unique<Cst820>();
+    if (!_cst820->begin(i2c_bus_get_internal_bus_handle(_i2c_bus))) {
+        mclog::tagError(_tag, "touchpad init failed");
+        _cst820.reset();
+    }
+}
+
+Hal::TouchPoint Hal::getTouchPoint()
+{
+    Hal::TouchPoint point;
+    if (_cst820 && _cst820->read()) {
+        point.num = _cst820->getFingerNum();
+        if (point.num > 0) {
+            point.x = _cst820->getX();
+            point.y = _cst820->getY();
+        }
+    }
+    return point;
+}
+
+bool Hal::display_ready() const
+{
+    return _display != nullptr && lv_display_get_default() != nullptr;
+}
+
+bool Hal::touch_ready() const
+{
+    return _cst820 != nullptr && lvTouchpad != nullptr;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                    Lvgl                                    */
+/* -------------------------------------------------------------------------- */
+// https://github.com/m5stack/lv_m5_emulator/blob/main/src/utility/lvgl_port_m5stack.cpp
+#include <cstdlib>  // for aligned_alloc
+#include <cstring>  // for memset
+#include <lvgl.h>
+#include <atomic>
+
+static SemaphoreHandle_t xGuiSemaphore;
+static std::atomic<bool> _lvgl_update_enabled     = false;
+static std::atomic<uint32_t> _lvgl_handler_calls  = 0;
+static std::atomic<uint32_t> _lvgl_handler_max_us = 0;
+static std::atomic<uint32_t> _touch_reads         = 0;
+static std::atomic<uint32_t> _touch_max_gap_us    = 0;
+static std::atomic<int8_t> _lvgl_task_core        = -1;
+static std::atomic<int64_t> _touch_last_read_us   = 0;
+
+#define LV_BUFFER_LINE          120
+#define LV_TOUCH_READ_PERIOD_MS 8
+constexpr uint32_t LVGL_TASK_STACK_SIZE    = 32 * 1024;
+constexpr uint32_t LVGL_STACK_SAMPLE_COUNT = 20;
+constexpr UBaseType_t LVGL_TASK_PRIORITY   = 2;
+constexpr BaseType_t LVGL_TASK_CORE        = 1;
+
+static void update_max(std::atomic<uint32_t> &destination, uint32_t value)
+{
+    uint32_t previous = destination.load(std::memory_order_relaxed);
+    while (previous < value && !destination.compare_exchange_weak(previous, value, std::memory_order_relaxed)) {
+    }
+}
+
+static void lvgl_tick_timer(void *arg)
+{
+    (void)arg;
+    lv_tick_inc(10);
+}
+
+static void lvgl_rtos_task(void *pvParameter)
+{
+    (void)pvParameter;
+    _lvgl_task_core.store(static_cast<int8_t>(xPortGetCoreID()), std::memory_order_relaxed);
+    uint32_t handled_count = 0;
+    while (true) {
+        if (_lvgl_update_enabled && pdTRUE == xSemaphoreTake(xGuiSemaphore, portMAX_DELAY)) {
+            const int64_t started_us = esp_timer_get_time();
+            lv_timer_handler();
+            const uint32_t elapsed_us = static_cast<uint32_t>(esp_timer_get_time() - started_us);
+            xSemaphoreGive(xGuiSemaphore);
+            _lvgl_handler_calls.fetch_add(1, std::memory_order_relaxed);
+            update_max(_lvgl_handler_max_us, elapsed_us);
+            if (++handled_count == LVGL_STACK_SAMPLE_COUNT) {
+                ESP_LOGI("HAL-Display", "LVGL task minimum free stack: %u bytes",
+                         static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
+{
+    M5GFX &gfx = *(M5GFX *)lv_display_get_driver_data(disp);
+
+    uint32_t w      = (area->x2 - area->x1 + 1);
+    uint32_t h      = (area->y2 - area->y1 + 1);
+    uint32_t pixels = w * h;
+
+    gfx.startWrite();
+    gfx.setAddrWindow(area->x1, area->y1, w, h);
+
+    // Critical fix: Use safe pixel writing method to avoid M5GFX SIMD optimizations
+    // Break large transfers into small chunks to avoid problematic copy_rgb_fast function
+    const uint32_t SAFE_CHUNK_SIZE = 8192;  // 8K pixels per chunk, suitable for small buffer settings
+
+    if (pixels > SAFE_CHUNK_SIZE) {
+        // Chunked transmission for large data
+        const lgfx::rgb565_t *src = (const lgfx::rgb565_t *)px_map;
+        uint32_t remaining        = pixels;
+        uint32_t offset           = 0;
+
+        while (remaining > 0) {
+            uint32_t chunk_size = (remaining > SAFE_CHUNK_SIZE) ? SAFE_CHUNK_SIZE : remaining;
+            gfx.writePixels(src + offset, chunk_size);
+            offset += chunk_size;
+            remaining -= chunk_size;
+        }
+    } else {
+        // Direct transmission for small data
+        gfx.writePixels((lgfx::rgb565_t *)px_map, pixels);
+    }
+
+    gfx.endWrite();
+
+    // LVGL can split one refresh into several draw-buffer-sized chunks. Keep
+    // those writes off-screen until the final chunk so a full-page transition
+    // is sent to the AMOLED as one continuous framebuffer update.
+    if (lv_display_flush_is_last(disp)) {
+        gfx.display();
+    }
+
+    lv_display_flush_ready(disp);
+}
+
+static void lvgl_read_cb(lv_indev_t *, lv_indev_data_t *data)
+{
+    const int64_t now_us      = esp_timer_get_time();
+    const int64_t previous_us = _touch_last_read_us.exchange(now_us, std::memory_order_relaxed);
+    _touch_reads.fetch_add(1, std::memory_order_relaxed);
+    if (previous_us > 0 && now_us > previous_us) {
+        update_max(_touch_max_gap_us, static_cast<uint32_t>(now_us - previous_us));
+    }
+    auto tp = GetHAL().getTouchPoint();
+    if (tp.num == 0) {
+        data->state = LV_INDEV_STATE_REL;
+    } else {
+        data->state   = LV_INDEV_STATE_PR;
+        data->point.x = tp.x;
+        data->point.y = tp.y;
+    }
+}
+
+void Hal::lvgl_init()
+{
+    mclog::tagInfo(_tag, "lvgl init");
+
+    lv_init();
+
+    static lv_display_t *disp = lv_display_create(_display->width(), _display->height());
+    if (disp == nullptr) {
+        ESP_LOGE("HAL-Display", "failed to create LVGL display");
+        ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    }
+
+    lv_display_set_driver_data(disp, _display.get());
+    lv_display_set_flush_cb(disp, lvgl_flush_cb);
+
+    const std::size_t draw_buffer_size = static_cast<std::size_t>(_display->width()) * LV_BUFFER_LINE *
+                                         LV_COLOR_FORMAT_GET_SIZE(lv_display_get_color_format(disp));
+    static uint8_t *buf1               = (uint8_t *)heap_caps_malloc(draw_buffer_size, MALLOC_CAP_SPIRAM);
+    static uint8_t *buf2               = (uint8_t *)heap_caps_malloc(draw_buffer_size, MALLOC_CAP_SPIRAM);
+    if (buf1 == nullptr || buf2 == nullptr) {
+        ESP_LOGE("HAL-Display", "failed to allocate %u-byte LVGL draw buffers",
+                 static_cast<unsigned>(draw_buffer_size));
+        ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    }
+    lv_display_set_buffers(disp, (void *)buf1, (void *)buf2, draw_buffer_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+    lvTouchpad = lv_indev_create();
+    LV_ASSERT_MALLOC(lvTouchpad);
+    if (lvTouchpad == nullptr) {
+        ESP_LOGE("HAL-Display", "failed to create LVGL touch input");
+        ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    }
+    lv_indev_set_type(lvTouchpad, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(lvTouchpad, lvgl_read_cb);
+    lv_indev_set_display(lvTouchpad, disp);
+    lv_timer_set_period(lv_indev_get_read_timer(lvTouchpad), LV_TOUCH_READ_PERIOD_MS);
+
+    xGuiSemaphore = xSemaphoreCreateMutex();
+    if (xGuiSemaphore == nullptr) {
+        ESP_LOGE("HAL-Display", "failed to create LVGL mutex");
+        ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    }
+    const esp_timer_create_args_t periodic_timer_args = {
+        .callback              = &lvgl_tick_timer,
+        .arg                   = nullptr,
+        .dispatch_method       = ESP_TIMER_TASK,
+        .name                  = "lvgl_tick_timer",
+        .skip_unhandled_events = false,
+    };
+    esp_timer_handle_t periodic_timer;
+    ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, 10 * 1000));
+    // Bluetooth controller/host and main_task are pinned to CPU0 by sdkconfig.
+    // Keep rendering and touch sampling on CPU1 so HID traffic cannot steal a
+    // frame, and give it priority over background application workers.
+    if (xTaskCreatePinnedToCore(lvgl_rtos_task, "lvgl_rtos_task", LVGL_TASK_STACK_SIZE, nullptr, LVGL_TASK_PRIORITY,
+                                nullptr, LVGL_TASK_CORE) != pdPASS) {
+        ESP_LOGE("HAL-Display", "failed to create LVGL task with %u-byte stack",
+                 static_cast<unsigned>(LVGL_TASK_STACK_SIZE));
+        ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    }
+
+    startLvglUpdate();
+
+    {
+        LvglLockGuard lock;
+        uitk::lvgl_cpp::ScreenActive screen;
+        screen.setBgColor(lv_color_black());
+        GetHAL().bootLogo = std::make_unique<BootLogo>();
+    }
+}
+
+bool Hal::lvglLock()
+{
+    return xGuiSemaphore != nullptr && xSemaphoreTake(xGuiSemaphore, portMAX_DELAY) == pdTRUE;
+}
+
+void Hal::lvglUnlock()
+{
+    if (xGuiSemaphore != nullptr) {
+        xSemaphoreGive(xGuiSemaphore);
+    }
+}
+
+Hal::PerformanceDiagnostics Hal::performanceDiagnostics() const
+{
+    return {
+        .lvglHandlerCalls = _lvgl_handler_calls.load(std::memory_order_relaxed),
+        .lvglHandlerMaxUs = _lvgl_handler_max_us.load(std::memory_order_relaxed),
+        .touchReads       = _touch_reads.load(std::memory_order_relaxed),
+        .touchMaxGapUs    = _touch_max_gap_us.load(std::memory_order_relaxed),
+        .lvglTaskCore     = _lvgl_task_core.load(std::memory_order_relaxed),
+    };
+}
+
+void Hal::resetPerformanceDiagnostics()
+{
+    _lvgl_handler_calls.store(0, std::memory_order_relaxed);
+    _lvgl_handler_max_us.store(0, std::memory_order_relaxed);
+    _touch_reads.store(0, std::memory_order_relaxed);
+    _touch_max_gap_us.store(0, std::memory_order_relaxed);
+    _touch_last_read_us.store(0, std::memory_order_relaxed);
+}
+
+void Hal::startLvglUpdate()
+{
+    _lvgl_update_enabled = true;
+}
+
+void Hal::stopLvglUpdate()
+{
+    _lvgl_update_enabled = false;
+}
