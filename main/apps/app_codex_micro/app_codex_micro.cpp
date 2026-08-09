@@ -8,6 +8,8 @@
 #include <mooncake_log.h>
 #include <system_config.h>
 #include <assets/assets.h>
+#include <esp_heap_caps.h>
+#include <esp_log.h>
 #include <new>
 #include <utility>
 #include <vector>
@@ -30,6 +32,10 @@ void AppCodexMicro::onCreate()
 void AppCodexMicro::onOpen()
 {
     mclog::tagInfo(getAppInfo().name, "on open");
+    ESP_LOGI("CodexRemote", "open: internal_free=%u internal_largest=%u psram_free=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
     std::unique_ptr<codex_input::KeyManager> key_manager(new (std::nothrow) codex_input::KeyManager());
     std::unique_ptr<view::CodexMicroView> app_view(new (std::nothrow) view::CodexMicroView());
     if (key_manager == nullptr || app_view == nullptr) {
@@ -45,6 +51,10 @@ void AppCodexMicro::onOpen()
     LvglLockGuard lock;
     _view = std::move(app_view);
     _view->init(lv_screen_active());
+    ESP_LOGI("CodexRemote", "ready: internal_free=%u internal_largest=%u psram_free=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
 }
 
 void AppCodexMicro::onRunning()

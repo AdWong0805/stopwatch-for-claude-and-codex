@@ -56,7 +56,6 @@ private:
 
     static void keyEvent(lv_event_t* event);
     static void iconEvent(lv_event_t* event);
-    static void commandDeckEvent(lv_event_t* event);
     static void joystickHitTestEvent(lv_event_t* event);
     static void joystickEvent(lv_event_t* event);
     static void dialTrackEvent(lv_event_t* event);
@@ -95,7 +94,6 @@ private:
     void releaseDialGesture();
 
     lv_obj_t* _root                           = nullptr;
-    lv_vector_path_t* _command_path           = nullptr;
     std::array<lv_obj_t*, 14> _ambient_layers = {};
     lv_obj_t* _touch_control                  = nullptr;
     lv_obj_t* _mic_screen                     = nullptr;
@@ -106,6 +104,7 @@ private:
     std::array<lv_obj_t*, 3> _pairing_dots    = {};
     std::array<lv_obj_t*, 2> _page_roots      = {};
 
+    std::array<lv_obj_t*, 4> _command_buttons     = {};
     std::array<KeyContext, 4> _command_contexts   = {};
     std::array<bool, 4> _command_lit              = {};
     std::array<uint32_t, 4> _command_light_colors = {};

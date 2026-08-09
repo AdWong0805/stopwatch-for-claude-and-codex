@@ -14,6 +14,7 @@
 #include <hal/ble/codex_micro_ble.h>
 #include <hal/usage_link/usage_link.h>
 #include <hal/usage_link/usage_console.h>
+#include <freertos/task.h>
 
 using namespace mooncake;
 using namespace smooth_ui_toolkit;
@@ -66,5 +67,8 @@ extern "C" void app_main(void)
             last_codex_battery_update = now;
             GetCodexMicroBle().setBattery(GetHAL().getBatteryLevel(), GetHAL().isBatteryCharging());
         }
+        // Keep CPU0 available to Bluedroid, Wi-Fi, and the asynchronous HID
+        // sender while the launcher or a graphics-heavy app is active.
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }

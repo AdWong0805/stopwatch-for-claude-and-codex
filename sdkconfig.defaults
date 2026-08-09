@@ -41,6 +41,6 @@ CONFIG_BT_BLE_ENABLED=y
 CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
-CONFIG_LV_USE_VECTOR_GRAPHIC=y
-CONFIG_LV_USE_THORVG=y
-CONFIG_LV_USE_THORVG_INTERNAL=y
+# The All-in-One launcher uses native LVGL controls for Codex Remote. Keeping
+# ThorVG disabled avoids its large one-frame heap/CPU spike on app entry.
+# CONFIG_LV_USE_VECTOR_GRAPHIC is not set

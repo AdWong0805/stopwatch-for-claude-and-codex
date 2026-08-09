@@ -26,7 +26,6 @@ constexpr uint32_t Key                     = 0xF1F0EB;
 constexpr uint32_t KeyPressed              = 0xE8ECE8;
 constexpr uint32_t KeyHigh                 = 0xFFFFFA;
 constexpr uint32_t KeyPressedHigh          = 0xFFFFFF;
-constexpr uint32_t KeyPressedLow           = 0xEEF4F0;
 constexpr uint32_t KeyBorder               = 0xFFFFFA;
 constexpr uint32_t KeyInk                  = 0x171A18;
 constexpr uint32_t KeyMuted                = 0x69716D;
@@ -111,32 +110,6 @@ constexpr int DialThumbWidth                  = 46;
 constexpr int DialThumbHeight                 = 30;
 constexpr uint32_t DialReturnDurationMs       = 240;
 constexpr uint32_t DialFeedbackPeriodMs       = 40;
-constexpr float CommandPathCenter             = 174.0f;
-constexpr float CommandCanvasSize             = 348.0f;
-constexpr float CommandShadowOffsetY          = 4.0f;
-constexpr float CommandShadowStrokeWidth      = 5.0f;
-constexpr float CommandBorderStrokeWidth      = 2.0f;
-constexpr lv_opa_t CommandShadowFillOpacity   = LV_OPA_30;
-constexpr lv_opa_t CommandShadowStrokeOpacity = LV_OPA_20;
-
-lv_area_t commandSegmentArea(int center_x, int center_y, std::size_t slot)
-{
-    // The outer SVG arc is radius 168 around the 174 px path center, so its
-    // apex reaches 168 px away from the display center. Include stroke and
-    // shadow margins; otherwise a moving overlay can clear the outer 28 px of
-    // a segment without scheduling that segment to be redrawn.
-    switch (slot) {
-        case 0:
-            return {center_x - 116, center_y - 175, center_x + 116, center_y - 59};
-        case 1:
-            return {center_x - 175, center_y - 116, center_x - 59, center_y + 116};
-        case 2:
-            return {center_x + 59, center_y - 116, center_x + 175, center_y + 116};
-        default:
-            return {center_x - 116, center_y + 59, center_x + 116, center_y + 175};
-    }
-}
-
 static_assert(AgentControls.size() == 6, "Codex Micro requires six Agent Keys");
 static_assert(CommandControls.size() == 4, "Command page exposes four touch keys");
 
@@ -292,56 +265,6 @@ void drawArc(lv_layer_t* layer, int x, int y, int radius, int start_angle, int e
     lv_draw_arc(layer, &draw);
 }
 
-lv_fpoint_t commandPathPoint(int center_x, int center_y, float x, float y, uint8_t quarter_turns)
-{
-    const float dx = x - CommandPathCenter;
-    const float dy = y - CommandPathCenter;
-    switch (quarter_turns % 4) {
-        case 1:
-            return {center_x - dy, center_y + dx};
-        case 2:
-            return {center_x - dx, center_y - dy};
-        case 3:
-            return {center_x + dy, center_y - dx};
-        default:
-            return {center_x + dx, center_y + dy};
-    }
-}
-
-void buildCommandSegmentPath(lv_vector_path_t* path, int center_x, int center_y, uint8_t quarter_turns)
-{
-    const auto point  = [=](float x, float y) { return commandPathPoint(center_x, center_y, x, y, quarter_turns); };
-    const auto moveTo = [&](float x, float y) {
-        const lv_fpoint_t target = point(x, y);
-        lv_vector_path_move_to(path, &target);
-    };
-    const auto lineTo = [&](float x, float y) {
-        const lv_fpoint_t target = point(x, y);
-        lv_vector_path_line_to(path, &target);
-    };
-    const auto quadTo = [&](float control_x, float control_y, float x, float y) {
-        const lv_fpoint_t control = point(control_x, control_y);
-        const lv_fpoint_t target  = point(x, y);
-        lv_vector_path_quad_to(path, &control, &target);
-    };
-    const auto arcTo = [&](float radius, bool clockwise, float x, float y) {
-        const lv_fpoint_t target = point(x, y);
-        lv_vector_path_arc_to(path, radius, radius, 0.0f, false, clockwise, &target);
-    };
-
-    // Exact path from the reviewed 348 x 348 HTML command button. The other
-    // three buttons are quarter-turn rotations around its 174 x 174 center.
-    moveTo(68.3f, 56.6f);
-    quadTo(61.6f, 49.2f, 68.3f, 43.4f);
-    arcTo(168.0f, true, 279.7f, 43.4f);
-    quadTo(286.4f, 49.2f, 279.7f, 56.6f);
-    lineTo(240.9f, 99.7f);
-    quadTo(234.2f, 107.1f, 228.2f, 102.1f);
-    arcTo(90.0f, false, 119.8f, 102.1f);
-    quadTo(113.8f, 107.1f, 107.1f, 99.7f);
-    lv_vector_path_close(path);
-}
-
 void drawOutline(lv_layer_t* layer, int x1, int y1, int x2, int y2, int radius, int width, uint32_t color)
 {
     lv_draw_rect_dsc_t draw;
@@ -364,9 +287,6 @@ CodexMicroView::~CodexMicroView()
     releaseActiveInputs();
     if (_root != nullptr) {
         lv_obj_delete(_root);
-    }
-    if (_command_path != nullptr) {
-        lv_vector_path_delete(_command_path);
     }
 }
 
@@ -555,11 +475,19 @@ void CodexMicroView::createCommandButton(lv_obj_t* parent, std::size_t slot, int
     lv_obj_t* button = lv_button_create(parent);
     lv_obj_set_pos(button, x, y);
     lv_obj_set_size(button, width, height);
-    stylePanel(button, Background, Background, radius, 0);
-    lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, PressedStyle);
-    lv_obj_set_style_shadow_width(button, 0, LV_PART_MAIN);
+    // The factory launcher build uses lightweight native LVGL buttons here.
+    // The previous high-quality ThorVG path caused a large one-frame memory
+    // and render-time spike as soon as Codex Remote opened on the ESP32-S3.
+    stylePanel(button, Key, KeyBorder, radius, 1);
+    lv_obj_set_style_bg_grad_color(button, lv_color_hex(KeyHigh), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_dir(button, LV_GRAD_DIR_VER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(button, lv_color_hex(KeyPressed), PressedStyle);
+    lv_obj_set_style_bg_grad_color(button, lv_color_hex(KeyPressedHigh), PressedStyle);
+    lv_obj_set_style_shadow_width(button, 8, LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(button, LV_OPA_20, LV_PART_MAIN);
+    lv_obj_set_style_shadow_color(button, lv_color_black(), LV_PART_MAIN);
 
+    _command_buttons[slot]  = button;
     _command_contexts[slot] = {.owner = this, .control = control, .agent = -1, .active = false};
     lv_obj_add_event_cb(button, keyEvent, LV_EVENT_PRESSED, &_command_contexts[slot]);
     lv_obj_add_event_cb(button, keyEvent, LV_EVENT_RELEASED, &_command_contexts[slot]);
@@ -571,12 +499,6 @@ void CodexMicroView::createCommandButton(lv_obj_t* parent, std::size_t slot, int
 
 void CodexMicroView::renderCommand(lv_obj_t* parent)
 {
-    _command_path = lv_vector_path_create(LV_VECTOR_PATH_QUALITY_HIGH);
-    if (_command_path == nullptr) {
-        ESP_LOGE(Tag, "unable to allocate persistent command vector path");
-    }
-    lv_obj_add_event_cb(parent, commandDeckEvent, LV_EVENT_DRAW_MAIN, this);
-
     createCommandButton(parent, 0, 165, 47, 136, 116, 38, CommandControls[0], Icon::Fast);
     createCommandButton(parent, 1, 47, 165, 116, 136, 38, CommandControls[1], Icon::Approve);
     createCommandButton(parent, 2, 303, 165, 116, 136, 38, CommandControls[2], Icon::Decline);
@@ -874,15 +796,19 @@ void CodexMicroView::updateCommandLighting(const CodexMicroState& state)
         snake_slot = static_cast<int>(seconds * (2.0f + 6.0f * speed)) % static_cast<int>(CommandControls.size());
     }
 
-    bool visuals_changed = _page_dirty;
     for (std::size_t i = 0; i < CommandControls.size(); ++i) {
         const bool lit           = enabled && (snake_slot < 0 || static_cast<int>(i) == snake_slot);
-        visuals_changed          = visuals_changed || _command_lit[i] != lit || _command_light_colors[i] != color;
+        const bool changed       = _page_dirty || _command_lit[i] != lit || _command_light_colors[i] != color;
         _command_lit[i]          = lit;
         _command_light_colors[i] = color;
-    }
-    if (visuals_changed && _page_roots[static_cast<std::size_t>(Page::Command)] != nullptr) {
-        lv_obj_invalidate(_page_roots[static_cast<std::size_t>(Page::Command)]);
+        if (changed && _command_buttons[i] != nullptr) {
+            const uint32_t border = lit ? color : KeyBorder;
+            lv_obj_set_style_border_color(_command_buttons[i], lv_color_hex(border), LV_PART_MAIN);
+            lv_obj_set_style_border_width(_command_buttons[i], lit ? 2 : 1, LV_PART_MAIN);
+            lv_obj_set_style_shadow_color(_command_buttons[i], lv_color_hex(lit ? color : 0x000000), LV_PART_MAIN);
+            lv_obj_set_style_shadow_opa(_command_buttons[i], lit ? LV_OPA_30 : LV_OPA_20, LV_PART_MAIN);
+            lv_obj_invalidate(_command_buttons[i]);
+        }
     }
     _command_last_update_tick = lv_tick_get();
 }
@@ -922,14 +848,10 @@ bool CodexMicroView::interactionActive() const
 
 void CodexMicroView::invalidateCommandSegment(std::size_t slot)
 {
-    lv_obj_t* page = _page_roots[static_cast<std::size_t>(Page::Command)];
-    if (page == nullptr || slot >= _command_contexts.size()) {
+    if (slot >= _command_buttons.size() || _command_buttons[slot] == nullptr) {
         return;
     }
-    lv_area_t coords;
-    lv_obj_get_coords(page, &coords);
-    const lv_area_t area = commandSegmentArea(coords.x1 + DisplayCenter, coords.y1 + DisplayCenter, slot);
-    lv_obj_invalidate_area(page, &area);
+    lv_obj_invalidate(_command_buttons[slot]);
 }
 
 void CodexMicroView::updateMicMeter()
@@ -1061,80 +983,6 @@ void CodexMicroView::keyEvent(lv_event_t* event)
         const std::size_t slot = static_cast<std::size_t>(context - &(*begin));
         context->owner->invalidateCommandSegment(slot);
     }
-}
-
-void CodexMicroView::commandDeckEvent(lv_event_t* event)
-{
-    auto* owner = static_cast<CodexMicroView*>(lv_event_get_user_data(event));
-    if (owner == nullptr || lv_event_get_code(event) != LV_EVENT_DRAW_MAIN) {
-        return;
-    }
-
-    lv_obj_t* object  = lv_event_get_target_obj(event);
-    lv_layer_t* layer = lv_event_get_layer(event);
-    lv_area_t coords;
-    lv_obj_get_coords(object, &coords);
-    const int center_x = coords.x1 + DisplayCenter;
-    const int center_y = coords.y1 + DisplayCenter;
-
-    lv_draw_vector_dsc_t* vector = lv_draw_vector_dsc_create(layer);
-    lv_vector_path_t* path       = owner->_command_path;
-    if (vector == nullptr || path == nullptr) {
-        ESP_LOGE(Tag, "unable to draw command vector path");
-        if (vector != nullptr) {
-            lv_draw_vector_dsc_delete(vector);
-        }
-        return;
-    }
-
-    // Fast / Approve / Decline / Fork map to top / left / right / bottom.
-    constexpr std::array<uint8_t, 4> QuarterTurns = {0, 3, 1, 2};
-    lv_draw_vector_dsc_set_stroke_join(vector, LV_VECTOR_STROKE_JOIN_ROUND);
-    for (std::size_t index = 0; index < QuarterTurns.size(); ++index) {
-        const lv_area_t segment_area = commandSegmentArea(center_x, center_y, index);
-        const lv_area_t& clip_area   = layer->buf_area;
-        const bool intersects        = segment_area.x1 <= clip_area.x2 && segment_area.x2 >= clip_area.x1 &&
-                                       segment_area.y1 <= clip_area.y2 && segment_area.y2 >= clip_area.y1;
-        if (!intersects) {
-            continue;
-        }
-        const bool active     = owner->_command_contexts[index].active;
-        const uint32_t border = owner->_command_lit[index] ? owner->_command_light_colors[index] : KeyBorder;
-
-        buildCommandSegmentPath(path, center_x, center_y + static_cast<int>(CommandShadowOffsetY), QuarterTurns[index]);
-        lv_draw_vector_dsc_set_fill_color(vector, lv_color_black());
-        lv_draw_vector_dsc_set_fill_opa(vector, CommandShadowFillOpacity);
-        lv_draw_vector_dsc_set_stroke_color(vector, lv_color_black());
-        lv_draw_vector_dsc_set_stroke_width(vector, CommandShadowStrokeWidth);
-        lv_draw_vector_dsc_set_stroke_opa(vector, CommandShadowStrokeOpacity);
-        lv_draw_vector_dsc_add_path(vector, path);
-        lv_vector_path_clear(path);
-
-        buildCommandSegmentPath(path, center_x, center_y, QuarterTurns[index]);
-        lv_grad_stop_t fill_stops[2] = {};
-        fill_stops[0].color          = lv_color_hex(active ? KeyPressedHigh : KeyHigh);
-        fill_stops[0].opa            = LV_OPA_COVER;
-        fill_stops[0].frac           = 0;
-        fill_stops[1].color          = lv_color_hex(active ? KeyPressedLow : Key);
-        fill_stops[1].opa            = LV_OPA_COVER;
-        fill_stops[1].frac           = 255;
-        const float gradient_start_x = static_cast<float>(center_x) - CommandPathCenter;
-        const float gradient_start_y = static_cast<float>(center_y) - CommandPathCenter;
-        lv_draw_vector_dsc_set_fill_opa(vector, LV_OPA_COVER);
-        lv_draw_vector_dsc_set_fill_linear_gradient(vector, gradient_start_x, gradient_start_y,
-                                                    gradient_start_x + CommandCanvasSize,
-                                                    gradient_start_y + CommandCanvasSize);
-        lv_draw_vector_dsc_set_fill_gradient_color_stops(vector, fill_stops, 2);
-        lv_draw_vector_dsc_set_fill_gradient_spread(vector, LV_VECTOR_GRADIENT_SPREAD_PAD);
-        lv_draw_vector_dsc_set_stroke_color(vector, lv_color_hex(border));
-        lv_draw_vector_dsc_set_stroke_width(vector, CommandBorderStrokeWidth);
-        lv_draw_vector_dsc_set_stroke_opa(vector, owner->_command_lit[index] ? LV_OPA_COVER : LV_OPA_TRANSP);
-        lv_draw_vector_dsc_add_path(vector, path);
-        lv_vector_path_clear(path);
-    }
-
-    lv_draw_vector(vector);
-    lv_draw_vector_dsc_delete(vector);
 }
 
 void CodexMicroView::joystickHitTestEvent(lv_event_t* event)
