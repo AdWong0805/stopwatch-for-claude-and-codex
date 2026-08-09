@@ -123,11 +123,20 @@ public:
 
         if (!LGFX_Device::init_impl(use_reset, use_clear)) return false;
 
-        // Keep the AMOLED framebuffer to avoid visible scan-line flicker.
-        // lvgl_flush_cb clips every dirty area before it reaches M5GFX; this
-        // prevents Panel_AMOLED_Framebuffer::display() from rounding an
-        // out-of-range edge up and reading beyond the framebuffer.
-        enableFrameBuffer(true);
+        // Keep the AMOLED framebuffer to avoid visible scan-line flicker, but
+        // submit it explicitly from lvgl_flush_cb.  Auto-display requests DMA
+        // line buffers at every dirty area's width, causing FlipBuffer to
+        // repeatedly free/reallocate and eventually return nullptr.
+        if (!enableFrameBuffer(false)) return false;
+
+        // Reserve both full-width DMA line buffers while internal RAM is
+        // plentiful.  All later display submissions use this exact size, so
+        // M5GFX never reallocates them during an app transition.
+        constexpr uint32_t dma_line_bytes = 468 * sizeof(lgfx::rgb565_t);
+        if (_bus_instance.getDMABuffer(dma_line_bytes) == nullptr ||
+            _bus_instance.getDMABuffer(dma_line_bytes) == nullptr) {
+            return false;
+        }
 
         _panel_instance.setBrightness(128);
 
@@ -346,6 +355,11 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
         }
     }
     gfx.endWrite();
+
+    // Commit complete framebuffer rows.  A fixed transfer width keeps the
+    // two M5GFX DMA line buffers at their preallocated 936-byte size while
+    // preserving the framebuffer's tear-free AMOLED update behavior.
+    gfx.display(0, y1, gfx.width(), h);
 
     lv_display_flush_ready(disp);
 }
