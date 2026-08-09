@@ -10,6 +10,7 @@
 #include <lgfx/v1/panel/Panel_AMOLED.hpp>
 #include <smooth_ui_toolkit.hpp>
 #include <uitk/short_namespace.hpp>
+#include <algorithm>
 #include <memory>
 
 static const std::string_view _tag = "HAL-Display";
@@ -122,7 +123,12 @@ public:
 
         if (!LGFX_Device::init_impl(use_reset, use_clear)) return false;
 
-        enableFrameBuffer(true);
+        // LVGL already owns two partial draw buffers.  Putting M5GFX's full
+        // AMOLED framebuffer underneath them adds a second dirty-region
+        // tracker.  Panel_AMOLED_Framebuffer::display() can then be handed a
+        // small/offset LVGL update and write outside its framebuffer.  Flush
+        // LVGL directly to the physical panel instead.
+        setPanel(&_panel_instance);
 
         _panel_instance.setBrightness(128);
 
@@ -293,34 +299,43 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 {
     M5GFX &gfx = *(M5GFX *)lv_display_get_driver_data(disp);
 
-    uint32_t w      = (area->x2 - area->x1 + 1);
-    uint32_t h      = (area->y2 - area->y1 + 1);
-    uint32_t pixels = w * h;
-
-    gfx.startWrite();
-    gfx.setAddrWindow(area->x1, area->y1, w, h);
-
-    // Critical fix: Use safe pixel writing method to avoid M5GFX SIMD optimizations
-    // Break large transfers into small chunks to avoid problematic copy_rgb_fast function
-    const uint32_t SAFE_CHUNK_SIZE = 8192;  // 8K pixels per chunk, suitable for small buffer settings
-
-    if (pixels > SAFE_CHUNK_SIZE) {
-        // Chunked transmission for large data
-        const lgfx::rgb565_t *src = (const lgfx::rgb565_t *)px_map;
-        uint32_t remaining        = pixels;
-        uint32_t offset           = 0;
-
-        while (remaining > 0) {
-            uint32_t chunk_size = (remaining > SAFE_CHUNK_SIZE) ? SAFE_CHUNK_SIZE : remaining;
-            gfx.writePixels(src + offset, chunk_size);
-            offset += chunk_size;
-            remaining -= chunk_size;
-        }
-    } else {
-        // Direct transmission for small data
-        gfx.writePixels((lgfx::rgb565_t *)px_map, pixels);
+    const int32_t source_w = area->x2 - area->x1 + 1;
+    const int32_t source_h = area->y2 - area->y1 + 1;
+    if (px_map == nullptr || source_w <= 0 || source_h <= 0) {
+        lv_display_flush_ready(disp);
+        return;
     }
 
+    // LVGL may invalidate an area that extends beyond the visible panel.
+    // Clip the destination and move the source pointer by the same amount so
+    // M5GFX never receives negative or oversized AMOLED coordinates.
+    const int32_t x1 = std::max<int32_t>(0, area->x1);
+    const int32_t y1 = std::max<int32_t>(0, area->y1);
+    const int32_t x2 = std::min<int32_t>(gfx.width() - 1, area->x2);
+    const int32_t y2 = std::min<int32_t>(gfx.height() - 1, area->y2);
+    if (x1 > x2 || y1 > y2) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
+    const uint32_t w = static_cast<uint32_t>(x2 - x1 + 1);
+    const uint32_t h = static_cast<uint32_t>(y2 - y1 + 1);
+    const auto *source = reinterpret_cast<const lgfx::rgb565_t *>(px_map) +
+                         static_cast<std::size_t>(y1 - area->y1) * source_w + (x1 - area->x1);
+
+    gfx.startWrite();
+    if (w == static_cast<uint32_t>(source_w)) {
+        // The common path is tightly packed and can be transferred in one go.
+        gfx.setAddrWindow(x1, y1, w, h);
+        gfx.writePixels(source, w * h);
+    } else {
+        // Horizontal clipping leaves a source stride.  Send one row at a time
+        // rather than treating the clipped pixels as a contiguous rectangle.
+        for (uint32_t row = 0; row < h; ++row) {
+            gfx.setAddrWindow(x1, y1 + row, w, 1);
+            gfx.writePixels(source + static_cast<std::size_t>(row) * source_w, w);
+        }
+    }
     gfx.endWrite();
 
     lv_display_flush_ready(disp);
@@ -361,6 +376,14 @@ void Hal::lvgl_init()
                                          LV_COLOR_FORMAT_GET_SIZE(lv_display_get_color_format(disp));
     static uint8_t *buf1               = (uint8_t *)heap_caps_malloc(draw_buffer_size, MALLOC_CAP_SPIRAM);
     static uint8_t *buf2               = (uint8_t *)heap_caps_malloc(draw_buffer_size, MALLOC_CAP_SPIRAM);
+    if (buf1 == nullptr || buf2 == nullptr) {
+        printf("LVGL draw buffer allocation failed (bytes=%u)\n", static_cast<unsigned>(draw_buffer_size));
+        free(buf1);
+        free(buf2);
+        buf1 = nullptr;
+        buf2 = nullptr;
+        return;
+    }
     lv_display_set_buffers(disp, (void *)buf1, (void *)buf2, draw_buffer_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
     lvTouchpad = lv_indev_create();
