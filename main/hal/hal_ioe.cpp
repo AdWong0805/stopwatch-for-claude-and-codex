@@ -230,7 +230,11 @@ void _vibrator_init()
 
 void Hal::vibrate(uint16_t durationMs, uint8_t strength)
 {
-    _vibrator.vibrate(durationMs, strength);
+    // Touch feedback can brown out battery-powered StopWatch units when the
+    // motor starts. Keep the motor initialized at zero duty, but ignore all
+    // runtime vibration requests so touch input remains safe off USB power.
+    (void)durationMs;
+    (void)strength;
 }
 
 void Hal::stopVibrate()
