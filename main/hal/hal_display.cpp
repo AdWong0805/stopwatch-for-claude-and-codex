@@ -123,12 +123,11 @@ public:
 
         if (!LGFX_Device::init_impl(use_reset, use_clear)) return false;
 
-        // LVGL already owns two partial draw buffers.  Putting M5GFX's full
-        // AMOLED framebuffer underneath them adds a second dirty-region
-        // tracker.  Panel_AMOLED_Framebuffer::display() can then be handed a
-        // small/offset LVGL update and write outside its framebuffer.  Flush
-        // LVGL directly to the physical panel instead.
-        setPanel(&_panel_instance);
+        // Keep the AMOLED framebuffer to avoid visible scan-line flicker.
+        // lvgl_flush_cb clips every dirty area before it reaches M5GFX; this
+        // prevents Panel_AMOLED_Framebuffer::display() from rounding an
+        // out-of-range edge up and reading beyond the framebuffer.
+        enableFrameBuffer(true);
 
         _panel_instance.setBrightness(128);
 
