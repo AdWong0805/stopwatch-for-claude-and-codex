@@ -320,20 +320,30 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 
     const uint32_t w = static_cast<uint32_t>(x2 - x1 + 1);
     const uint32_t h = static_cast<uint32_t>(y2 - y1 + 1);
-    const auto *source = reinterpret_cast<const lgfx::rgb565_t *>(px_map) +
-                         static_cast<std::size_t>(y1 - area->y1) * source_w + (x1 - area->x1);
+
+    // Partial LVGL draw buffers can pad every row to LV_DRAW_BUF_STRIDE_ALIGN.
+    // Using source_w * h as one contiguous block makes odd-width invalidated
+    // areas drift a pixel on each row, which appears as flicker/diagonal bands.
+    const lv_draw_buf_t *active_buf = lv_display_get_buf_active(disp);
+    const std::size_t packed_stride = static_cast<std::size_t>(source_w) * sizeof(lgfx::rgb565_t);
+    const std::size_t source_stride =
+        active_buf != nullptr && active_buf->header.stride >= packed_stride ? active_buf->header.stride : packed_stride;
+    const auto *source = px_map + static_cast<std::size_t>(y1 - area->y1) * source_stride +
+                         static_cast<std::size_t>(x1 - area->x1) * sizeof(lgfx::rgb565_t);
 
     gfx.startWrite();
-    if (w == static_cast<uint32_t>(source_w)) {
+    if (w == static_cast<uint32_t>(source_w) && source_stride == packed_stride) {
         // The common path is tightly packed and can be transferred in one go.
         gfx.setAddrWindow(x1, y1, w, h);
-        gfx.writePixels(source, w * h);
+        gfx.writePixels(reinterpret_cast<const lgfx::rgb565_t *>(source), w * h);
     } else {
-        // Horizontal clipping leaves a source stride.  Send one row at a time
-        // rather than treating the clipped pixels as a contiguous rectangle.
+        // Row padding or horizontal clipping leaves a source stride.  Send
+        // one row at a time rather than crossing the padding as pixel data.
         for (uint32_t row = 0; row < h; ++row) {
             gfx.setAddrWindow(x1, y1 + row, w, 1);
-            gfx.writePixels(source + static_cast<std::size_t>(row) * source_w, w);
+            const auto *row_source =
+                reinterpret_cast<const lgfx::rgb565_t *>(source + static_cast<std::size_t>(row) * source_stride);
+            gfx.writePixels(row_source, w);
         }
     }
     gfx.endWrite();
