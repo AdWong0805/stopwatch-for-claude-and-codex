@@ -385,7 +385,13 @@ void CodexMicroBle::hidEventCallback(void*, esp_event_base_t, int32_t id, void* 
             ESP_LOGI(Tag, "host connected");
             break;
         case ESP_HIDD_OUTPUT_EVENT:
-            if (data != nullptr && data->output.report_id == ReportId) {
+            // Windows can expose this vendor Output report through ESP-IDF with
+            // report_id == 0 while leaving Report ID 6 in the byte stream. The
+            // device only has one Output report, so validate its framing in
+            // onOutput() instead of dropping it solely on the event metadata.
+            if (data != nullptr && data->output.data != nullptr && data->output.length > 0) {
+                ESP_LOGI(Tag, "OUTPUT report_id=%u len=%u first=%02X", static_cast<unsigned>(data->output.report_id),
+                         static_cast<unsigned>(data->output.length), static_cast<unsigned>(data->output.data[0]));
                 owner.onOutput(data->output.data, data->output.length);
             }
             break;
@@ -839,8 +845,26 @@ void CodexMicroBle::onOutput(const uint8_t* data, std::size_t length)
         return;
     }
 
-    std::size_t offset = length >= 3 && data[0] == ReportId ? 1 : 0;
-    if (length < offset + 2 || data[offset] != 2) {
+    // Depending on the Windows HID/BLE path, ESP-IDF may deliver the 63-byte
+    // report body directly or retain one/two leading Report-ID bytes. Locate
+    // the protocol frame marker rather than assuming one platform's layout.
+    std::size_t offset       = 0;
+    bool frameHeaderFound    = false;
+    const std::size_t maxGap = std::min<std::size_t>(3, length - 2);
+    for (std::size_t candidate = 0; candidate <= maxGap; ++candidate) {
+        if (data[candidate] != 2 || data[candidate + 1] > PayloadSize) {
+            continue;
+        }
+        if (candidate + 2 + data[candidate + 1] <= length) {
+            offset           = candidate;
+            frameHeaderFound = true;
+            break;
+        }
+    }
+    if (!frameHeaderFound) {
+        ESP_LOGW(Tag, "unrecognized output report len=%u prefix=%02X %02X %02X", static_cast<unsigned>(length),
+                 static_cast<unsigned>(data[0]), static_cast<unsigned>(length > 1 ? data[1] : 0),
+                 static_cast<unsigned>(length > 2 ? data[2] : 0));
         ++_rpc_errors;
         return;
     }
