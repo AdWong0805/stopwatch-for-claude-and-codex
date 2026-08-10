@@ -63,7 +63,13 @@ void ensureTask()
 
 void Hal::setMicrophoneMeterEnabled(bool enabled)
 {
-    ensureTask();
+    // Watch-microphone streaming already calculates the meter level from the
+    // captured PCM. Avoid creating this permanent 4 KB task in that mode: it
+    // fragments the small internal heap after the first recording and can
+    // prevent the next streaming task from being created.
+    if (enabled && !g_external.load()) {
+        ensureTask();
+    }
     const bool was = g_enabled.exchange(enabled);
     if (!was && enabled && g_task != nullptr) {
         xTaskNotifyGive(g_task);
@@ -85,6 +91,14 @@ void Hal::setMicrophoneMeterExternal(bool external)
     g_external.store(external);
     if (!external) {
         g_level_milli.store(0);
+        // If external capture failed while the overlay is still visible,
+        // resume the local-only meter instead of leaving the UI frozen.
+        if (g_enabled.load()) {
+            ensureTask();
+            if (g_task != nullptr) {
+                xTaskNotifyGive(g_task);
+            }
+        }
     }
 }
 

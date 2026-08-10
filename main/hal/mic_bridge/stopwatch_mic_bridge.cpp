@@ -7,6 +7,7 @@
 #include <hal/usage_link/usage_link.h>
 
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <lwip/netdb.h>
@@ -68,9 +69,12 @@ bool StopWatchMicBridge::start()
 {
     bool expected = false;
     if (!_busy.compare_exchange_strong(expected, true)) {
+        ESP_LOGW(Tag, "start rejected: previous session still busy state=%u",
+                 static_cast<unsigned>(_state.load()));
         return false;
     }
     if (!usage_link::GetUsageLink().copyCompanionHost(_host, sizeof(_host))) {
+        ESP_LOGW(Tag, "start rejected: Wi-Fi companion host is not ready");
         _busy.store(false);
         _state.store(State::Error);
         return false;
@@ -83,11 +87,15 @@ bool StopWatchMicBridge::start()
     const BaseType_t created = xTaskCreatePinnedToCore(
         &StopWatchMicBridge::taskEntry, "watch_mic", 6144, this, 4, nullptr, 0);
     if (created != pdPASS) {
+        ESP_LOGE(Tag, "task creation failed: internal_free=%u largest=%u",
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
         GetHAL().setMicrophoneMeterExternal(false);
         _busy.store(false);
         _state.store(State::Error);
         return false;
     }
+    ESP_LOGI(Tag, "recording started: host=%s:%u", _host, static_cast<unsigned>(VoiceBridgePort));
     return true;
 }
 
