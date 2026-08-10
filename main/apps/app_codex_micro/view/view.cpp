@@ -383,7 +383,7 @@ void CodexMicroView::init(lv_obj_t* parent)
     }
 
     lv_obj_t* mic_source = lv_label_create(_mic_screen);
-    lv_label_set_text(mic_source, "HOST PTT / LOCAL LEVEL");
+    lv_label_set_text(mic_source, "WATCH MIC / WIFI");
     lv_obj_set_style_text_font(mic_source, &lv_font_montserrat_14, LV_PART_MAIN);
     lv_obj_set_style_text_color(mic_source, lv_color_hex(KeyMuted), LV_PART_MAIN);
     lv_obj_align(mic_source, LV_ALIGN_CENTER, 0, 116);

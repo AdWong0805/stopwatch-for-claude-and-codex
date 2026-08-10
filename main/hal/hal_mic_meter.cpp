@@ -9,6 +9,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -16,6 +17,7 @@
 namespace {
 
 std::atomic<bool> g_enabled{false};
+std::atomic<bool> g_external{false};
 std::atomic<int> g_level_milli{0};
 TaskHandle_t g_task = nullptr;
 
@@ -26,6 +28,10 @@ void micMeterTask(void*)
         if (!g_enabled.load()) {
             g_level_milli.store(0);
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            continue;
+        }
+        if (g_external.load()) {
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
         samples.clear();
@@ -72,4 +78,18 @@ bool Hal::isMicrophoneMeterEnabled()
 float Hal::getMicrophoneLevel()
 {
     return static_cast<float>(g_level_milli.load()) / 1000.0f;
+}
+
+void Hal::setMicrophoneMeterExternal(bool external)
+{
+    g_external.store(external);
+    if (!external) {
+        g_level_milli.store(0);
+    }
+}
+
+void Hal::setMicrophoneLevel(float level)
+{
+    const int milli = static_cast<int>(std::clamp(level, 0.0f, 1.0f) * 1000.0f);
+    g_level_milli.store(milli);
 }

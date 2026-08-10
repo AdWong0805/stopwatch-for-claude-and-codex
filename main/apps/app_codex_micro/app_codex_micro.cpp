@@ -5,6 +5,7 @@
 
 #include <hal/ble/codex_micro_ble.h>
 #include <hal/hal.h>
+#include <hal/mic_bridge/stopwatch_mic_bridge.h>
 #include <mooncake_log.h>
 #include <system_config.h>
 #include <assets/assets.h>
@@ -46,6 +47,7 @@ void AppCodexMicro::onOpen()
     _key_manager       = std::move(key_manager);
     _last_ui_update_ms = 0;
     _mic_host_active   = false;
+    _mic_watch_active  = false;
     _send_host_active  = false;
 
     LvglLockGuard lock;
@@ -83,17 +85,25 @@ void AppCodexMicro::onRunning()
 
     bool mic_view_changed = false;
     if (codex_input::hasKeyEvent(event, codex_input::KeyEvent::MicPress) && state.connected) {
-        _mic_host_active = GetCodexMicroBle().sendKey(CodexMicroControl::Mic, CodexMicroKeyAction::Press);
+        _mic_watch_active = GetStopWatchMicBridge().start();
+        if (!_mic_watch_active) {
+            // Keep the original computer-microphone behavior as a fallback
+            // when Wi-Fi has not been configured or is temporarily offline.
+            _mic_host_active = GetCodexMicroBle().sendKey(CodexMicroControl::Mic, CodexMicroKeyAction::Press);
+        }
         mic_view_changed = true;
     }
     if (codex_input::hasKeyEvent(event, codex_input::KeyEvent::SendPress) && state.connected) {
         _send_host_active = GetCodexMicroBle().sendKey(CodexMicroControl::Send, CodexMicroKeyAction::Press);
     }
     if (codex_input::hasKeyEvent(event, codex_input::KeyEvent::MicRelease)) {
-        if (_mic_host_active && state.connected) {
+        if (_mic_watch_active) {
+            GetStopWatchMicBridge().stop();
+        } else if (_mic_host_active && state.connected) {
             GetCodexMicroBle().sendKey(CodexMicroControl::Mic, CodexMicroKeyAction::Release);
         }
-        _mic_host_active = false;
+        _mic_watch_active = false;
+        _mic_host_active  = false;
         mic_view_changed = true;
     }
     if (codex_input::hasKeyEvent(event, codex_input::KeyEvent::SendRelease)) {
@@ -112,7 +122,7 @@ void AppCodexMicro::onRunning()
     }
     _view->update(state);
     if (mic_view_changed) {
-        _view->setMicActive(_mic_host_active);
+        _view->setMicActive(_mic_watch_active || _mic_host_active);
     }
     if (toggle_page) {
         _view->setMicActive(false);
@@ -127,6 +137,10 @@ void AppCodexMicro::onClose()
     if (_mic_host_active) {
         GetCodexMicroBle().sendKey(CodexMicroControl::Mic, CodexMicroKeyAction::Release);
         _mic_host_active = false;
+    }
+    if (_mic_watch_active) {
+        GetStopWatchMicBridge().stop();
+        _mic_watch_active = false;
     }
     if (_send_host_active) {
         GetCodexMicroBle().sendKey(CodexMicroControl::Send, CodexMicroKeyAction::Release);

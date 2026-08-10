@@ -17,6 +17,7 @@
  */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace usage_link {
@@ -63,6 +64,9 @@ public:
     void clearConfig();
 
     bool configured() const;
+
+    /** Copies the configured companion host when Wi-Fi is ready. */
+    bool copyCompanionHost(char* host, std::size_t capacity) const;
 };
 
 UsageLink& GetUsageLink();

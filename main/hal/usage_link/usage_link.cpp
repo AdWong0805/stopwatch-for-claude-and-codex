@@ -48,6 +48,7 @@ public:
     void setWifiConfig(const char* ssid, const char* password);
     void setHostConfig(const char* host, uint16_t port);
     void clearConfig();
+    bool copyCompanionHost(char* host, std::size_t capacity) const;
     bool configured() const
     {
         return _configured;
@@ -223,6 +224,15 @@ bool UsageLinkImpl::requestAction(const char* target, const char* action)
     std::snprintf(request.target, sizeof(request.target), "%s", target);
     std::snprintf(request.action, sizeof(request.action), "%s", action);
     return xQueueSend(_action_queue, &request, 0) == pdTRUE;
+}
+
+bool UsageLinkImpl::copyCompanionHost(char* host, std::size_t capacity) const
+{
+    if (!_configured || !_got_ip || host == nullptr || capacity == 0 || _host[0] == '\0') {
+        return false;
+    }
+    std::snprintf(host, capacity, "%s", _host);
+    return true;
 }
 
 /* --------------------------------- worker ---------------------------------- */
@@ -421,6 +431,11 @@ void UsageLink::clearConfig()
 bool UsageLink::configured() const
 {
     return g_impl.configured();
+}
+
+bool UsageLink::copyCompanionHost(char* host, std::size_t capacity) const
+{
+    return g_impl.copyCompanionHost(host, capacity);
 }
 
 UsageLink& GetUsageLink()

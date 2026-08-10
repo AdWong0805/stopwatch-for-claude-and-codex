@@ -194,6 +194,8 @@ public:
     void setMicrophoneMeterEnabled(bool enabled);
     bool isMicrophoneMeterEnabled();
     float getMicrophoneLevel();
+    void setMicrophoneMeterExternal(bool external);
+    void setMicrophoneLevel(float level);
 
     struct AudioSpectrumFrame {
         static constexpr std::size_t bandCount = 20;
