@@ -27,6 +27,10 @@
 #include <system_config.h>
 
 extern "C" void codex_micro_hid_gatt_compat_link_anchor();
+extern "C" void codex_micro_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
+                                                  esp_ble_gatts_cb_param_t* param);
+extern "C" esp_err_t codex_micro_hid_input_set(esp_hidd_dev_t* device, size_t map_index, size_t report_id,
+                                                 uint8_t* data, size_t length);
 
 namespace {
 
@@ -199,7 +203,7 @@ bool CodexMicroBle::begin()
     }
 
     if (logStepError("esp_ble_gatts_register_callback",
-                     esp_ble_gatts_register_callback(esp_hidd_gatts_event_handler))) {
+                     esp_ble_gatts_register_callback(codex_micro_gatts_event_handler))) {
         return false;
     }
 
@@ -815,7 +819,7 @@ bool CodexMicroBle::sendJson(const char* json)
         if (json_chunk < chunk) {
             report[2 + json_chunk] = '\n';
         }
-        esp_err_t error = esp_hidd_dev_input_set(_hid_device, 0, ReportId, report, sizeof(report));
+        esp_err_t error = codex_micro_hid_input_set(_hid_device, 0, ReportId, report, sizeof(report));
         if (error != ESP_OK) {
             ++_tx_failures;
             ESP_LOGW(Tag, "input report failed: %s", esp_err_to_name(error));
