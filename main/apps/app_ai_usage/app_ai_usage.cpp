@@ -109,26 +109,33 @@ void AppAiUsage::buildUi()
         lv_label_set_text(pct, "--");
         lv_obj_set_style_text_font(pct, &lv_font_montserrat_28, LV_PART_MAIN);
         lv_obj_set_style_text_color(pct, lv_color_hex(Text), LV_PART_MAIN);
-        lv_obj_align(pct, LV_ALIGN_TOP_MID, center_offset, ArcY + 52);
+        lv_obj_align(pct, LV_ALIGN_TOP_MID, center_offset, ArcY + 45);
+
+        lv_obj_t* remaining      = lv_label_create(_root);
+        _remaining_labels[index] = remaining;
+        lv_label_set_text(remaining, "LEFT");
+        lv_obj_set_style_text_font(remaining, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_set_style_text_color(remaining, lv_color_hex(Muted), LV_PART_MAIN);
+        lv_obj_align(remaining, LV_ALIGN_TOP_MID, center_offset, ArcY + 79);
 
         lv_obj_t* reset      = lv_label_create(_root);
         _reset_labels[index] = reset;
         lv_label_set_text(reset, "");
-        lv_obj_set_style_text_font(reset, &lv_font_montserrat_16, LV_PART_MAIN);
+        lv_obj_set_style_text_font(reset, &lv_font_montserrat_14, LV_PART_MAIN);
         lv_obj_set_style_text_color(reset, lv_color_hex(Muted), LV_PART_MAIN);
-        lv_obj_align(reset, LV_ALIGN_TOP_MID, center_offset, ArcY + 88);
+        lv_obj_align(reset, LV_ALIGN_TOP_MID, center_offset, ArcY + ArcSize + 24);
 
         lv_obj_t* name = lv_label_create(_root);
         lv_label_set_text(name, Names[index]);
         lv_obj_set_style_text_font(name, &lv_font_montserrat_16, LV_PART_MAIN);
         lv_obj_set_style_text_color(name, lv_color_hex(AccentColors[index]), LV_PART_MAIN);
-        lv_obj_align(name, LV_ALIGN_TOP_MID, center_offset, ArcY + ArcSize + 8);
+        lv_obj_align(name, LV_ALIGN_TOP_MID, center_offset, ArcY + ArcSize + 4);
 
         lv_obj_t* track = lv_obj_create(_root);
         lv_obj_remove_flag(track, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_flag(track, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_size(track, ArcSize - 30, 8);
-        lv_obj_set_pos(track, ArcX[index] + 15, ArcY + ArcSize + 34);
+        lv_obj_set_pos(track, ArcX[index] + 15, ArcY + ArcSize + 48);
         lv_obj_set_style_bg_color(track, lv_color_hex(Track), LV_PART_MAIN);
         lv_obj_set_style_border_width(track, 0, LV_PART_MAIN);
         lv_obj_set_style_radius(track, 4, LV_PART_MAIN);
@@ -147,10 +154,10 @@ void AppAiUsage::buildUi()
 
         lv_obj_t* week      = lv_label_create(_root);
         _week_labels[index] = week;
-        lv_label_set_text(week, "WK --");
-        lv_obj_set_style_text_font(week, &lv_font_montserrat_16, LV_PART_MAIN);
+        lv_label_set_text(week, "WEEK -- LEFT");
+        lv_obj_set_style_text_font(week, &lv_font_montserrat_14, LV_PART_MAIN);
         lv_obj_set_style_text_color(week, lv_color_hex(Muted), LV_PART_MAIN);
-        lv_obj_align(week, LV_ALIGN_TOP_MID, center_offset, ArcY + ArcSize + 50);
+        lv_obj_align(week, LV_ALIGN_TOP_MID, center_offset, ArcY + ArcSize + 61);
     }
 
     constexpr std::array<const char*, 3> ButtonNames = {"FOCUS", "ENTER", "ESC"};
@@ -198,24 +205,33 @@ void AppAiUsage::refresh()
         const usage_link::Meter& session = *sessions[index];
         const usage_link::Meter& week    = *weeks[index];
 
-        lv_arc_set_value(_arcs[index], session.valid ? session.percent : 0);
+        const uint8_t session_left = session.valid ? static_cast<uint8_t>(100U - session.percent) : 0;
+        const uint8_t week_left    = week.valid ? static_cast<uint8_t>(100U - week.percent) : 0;
 
-        char text[16] = {};
+        lv_arc_set_value(_arcs[index], session_left);
+
+        char text[32] = {};
         if (session.valid) {
-            std::snprintf(text, sizeof(text), "%u%%", static_cast<unsigned>(session.percent));
+            std::snprintf(text, sizeof(text), "%u%%", static_cast<unsigned>(session_left));
         } else {
             std::snprintf(text, sizeof(text), "--");
         }
         lv_label_set_text(_pct_labels[index], text);
-        lv_label_set_text(_reset_labels[index], session.valid && session.reset[0] != '\0' ? session.reset : "");
+        lv_label_set_text(_remaining_labels[index], session.valid ? "LEFT" : "NO DATA");
+        if (session.valid && session.reset[0] != '\0') {
+            std::snprintf(text, sizeof(text), "RESET %s", session.reset);
+        } else {
+            text[0] = '\0';
+        }
+        lv_label_set_text(_reset_labels[index], text);
 
-        const int width = week.valid ? std::max(2, TrackWidth * week.percent / 100) : 2;
+        const int width = week.valid ? std::max(2, TrackWidth * week_left / 100) : 2;
         lv_obj_set_width(_week_bars[index], width);
 
         if (week.valid) {
-            std::snprintf(text, sizeof(text), "WK %u%%", static_cast<unsigned>(week.percent));
+            std::snprintf(text, sizeof(text), "WEEK %u%% LEFT", static_cast<unsigned>(week_left));
         } else {
-            std::snprintf(text, sizeof(text), "WK --");
+            std::snprintf(text, sizeof(text), "WEEK -- LEFT");
         }
         lv_label_set_text(_week_labels[index], text);
     }
@@ -258,10 +274,11 @@ void AppAiUsage::onClose()
         lv_obj_delete(_root);
         _root = nullptr;
     }
-    _status_label = nullptr;
-    _arcs         = {};
-    _pct_labels   = {};
-    _reset_labels = {};
-    _week_bars    = {};
-    _week_labels  = {};
+    _status_label    = nullptr;
+    _arcs            = {};
+    _pct_labels      = {};
+    _remaining_labels = {};
+    _reset_labels    = {};
+    _week_bars       = {};
+    _week_labels     = {};
 }

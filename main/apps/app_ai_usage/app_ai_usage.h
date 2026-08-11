@@ -35,6 +35,7 @@ private:
     lv_obj_t* _status_label                             = nullptr;
     std::array<lv_obj_t*, 2> _arcs                      = {};
     std::array<lv_obj_t*, 2> _pct_labels                = {};
+    std::array<lv_obj_t*, 2> _remaining_labels          = {};
     std::array<lv_obj_t*, 2> _reset_labels              = {};
     std::array<lv_obj_t*, 2> _week_bars                 = {};
     std::array<lv_obj_t*, 2> _week_labels               = {};
