@@ -204,22 +204,25 @@ void AppAiUsage::refresh()
     for (std::size_t index = 0; index < 2; ++index) {
         const usage_link::Meter& session = *sessions[index];
         const usage_link::Meter& week    = *weeks[index];
+        const usage_link::Meter& primary = session.valid ? session : week;
+        const bool primary_is_week       = !session.valid && week.valid;
 
-        const uint8_t session_left = session.valid ? static_cast<uint8_t>(100U - session.percent) : 0;
+        const uint8_t primary_left = primary.valid ? static_cast<uint8_t>(100U - primary.percent) : 0;
         const uint8_t week_left    = week.valid ? static_cast<uint8_t>(100U - week.percent) : 0;
 
-        lv_arc_set_value(_arcs[index], session_left);
+        lv_arc_set_value(_arcs[index], primary_left);
 
         char text[32] = {};
-        if (session.valid) {
-            std::snprintf(text, sizeof(text), "%u%%", static_cast<unsigned>(session_left));
+        if (primary.valid) {
+            std::snprintf(text, sizeof(text), "%u%%", static_cast<unsigned>(primary_left));
         } else {
             std::snprintf(text, sizeof(text), "--");
         }
         lv_label_set_text(_pct_labels[index], text);
-        lv_label_set_text(_remaining_labels[index], session.valid ? "LEFT" : "NO DATA");
-        if (session.valid && session.reset[0] != '\0') {
-            std::snprintf(text, sizeof(text), "RESET %s", session.reset);
+        const char* remaining_text = primary.valid ? (primary_is_week ? "WEEK LEFT" : "LEFT") : "NO DATA";
+        lv_label_set_text(_remaining_labels[index], remaining_text);
+        if (primary.valid && primary.reset[0] != '\0') {
+            std::snprintf(text, sizeof(text), "RESET %s", primary.reset);
         } else {
             text[0] = '\0';
         }
