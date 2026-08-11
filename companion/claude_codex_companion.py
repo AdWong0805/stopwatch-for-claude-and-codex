@@ -22,6 +22,8 @@ via ctypes); /usage works anywhere.
 """
 
 import json
+import math
+import socket
 import sys
 import threading
 import time
@@ -44,7 +46,7 @@ def _log(message: str) -> None:
 
 
 def _reset_hint(resets_at) -> str:
-    """Turns an ISO timestamp or epoch into a short 'in Xh Ym' hint."""
+    """Turns an ISO timestamp or epoch into a compact whole-hour countdown."""
     try:
         if resets_at is None:
             return ""
@@ -57,14 +59,10 @@ def _reset_hint(resets_at) -> str:
                 target = target.replace(tzinfo=timezone.utc)
         delta = (target - datetime.now(timezone.utc)).total_seconds()
         if delta <= 0:
-            return "resets now"
-        hours, rest = divmod(int(delta), 3600)
-        minutes = rest // 60
-        if hours >= 48:
-            return f"{hours // 24}d {hours % 24}h"
-        if hours > 0:
-            return f"{hours}h {minutes:02d}m"
-        return f"{minutes}m"
+            return "NOW"
+        total_hours = max(1, math.ceil(delta / 3600))
+        days, hours = divmod(total_hours, 24)
+        return f"{days}d {hours}h"
     except Exception:
         return ""
 
@@ -212,15 +210,12 @@ def fetch_codex_usage() -> dict:
 # --------------------------------------------------------------------------
 
 _cache_lock = threading.Lock()
-_cache_data: dict = {}
+_cache_data: dict = {"claude": {}, "codex": {}}
 _cache_time = 0.0
 
 
-def usage_payload() -> dict:
+def refresh_usage() -> None:
     global _cache_data, _cache_time
-    with _cache_lock:
-        if time.time() - _cache_time < CACHE_SECONDS and _cache_data:
-            return _cache_data
     data = {"claude": fetch_claude_usage(), "codex": fetch_codex_usage()}
     try:
         override = json.loads(OVERRIDE_FILE.read_text(encoding="utf-8"))
@@ -234,7 +229,25 @@ def usage_payload() -> dict:
     with _cache_lock:
         _cache_data = data
         _cache_time = time.time()
-    return data
+
+
+def usage_payload() -> dict:
+    """Return immediately; provider traffic runs only in the worker thread.
+
+    The watch has a five-second HTTP timeout. Fetching both provider APIs in
+    this request path could take 20-30 seconds and made a healthy companion
+    appear offline whenever its cache expired.
+    """
+    with _cache_lock:
+        return _cache_data
+
+
+def usage_worker() -> None:
+    while True:
+        started = time.time()
+        refresh_usage()
+        remaining = max(1.0, CACHE_SECONDS - (time.time() - started))
+        time.sleep(remaining)
 
 
 # --------------------------------------------------------------------------
@@ -345,6 +358,17 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class CompanionServer(ThreadingHTTPServer):
+    """Prevent two hidden autostart copies from sharing the same port."""
+
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def local_ip() -> str:
     import socket
 
@@ -366,8 +390,12 @@ def main() -> None:
     _log("  debug wifi <ssid> <password>")
     _log(f"  debug host <PC-LAN-IP> {PORT}")
     _log("Then reboot the watch. Ctrl+C stops the companion.")
-    usage_payload()  # warm the cache and surface provider errors early
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    try:
+        server = CompanionServer(("0.0.0.0", PORT), Handler)
+    except OSError as error:
+        _log(f"cannot listen on TCP {PORT}: {error}; another companion may already be running")
+        return
+    threading.Thread(target=usage_worker, name="usage-refresh", daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
