@@ -18,14 +18,26 @@ if not defined PY_EXE (
     exit /b 1
 )
 
+set "INSTALL_DIR=%LOCALAPPDATA%\StopwatchCompanion"
+set "COMPANION_SCRIPT=%INSTALL_DIR%\claude_codex_companion.py"
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
+copy /y "%~dp0claude_codex_companion.py" "%COMPANION_SCRIPT%" >nul
+if errorlevel 1 (
+    echo [ERROR] Could not install the companion into:
+    echo         %INSTALL_DIR%
+    pause
+    exit /b 1
+)
+if exist "%~dp0usage_override.json" copy /y "%~dp0usage_override.json" "%INSTALL_DIR%\usage_override.json" >nul
+
 set "VBS=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\stopwatch_companion.vbs"
 (
 echo Set shell = CreateObject("WScript.Shell"^)
-echo shell.Run """%PY_EXE%"" ""%~dp0claude_codex_companion.py""", 0, False
+echo shell.Run """%PY_EXE%"" ""%COMPANION_SCRIPT%""", 0, False
 ) > "%VBS%"
 
 if exist "%VBS%" (
-    echo [OK] Autostart installed. The companion now starts hidden at every login.
+    echo [OK] Companion installed to a stable folder and starts hidden at every login.
     echo      To remove it later, delete this file:
     echo      %VBS%
     echo.

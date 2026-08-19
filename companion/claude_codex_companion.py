@@ -2,9 +2,10 @@
 """Stopwatch Micro companion: serves Claude/Codex usage data to the watch
 and relays Claude control actions to the Claude desktop app.
 
-Endpoints (HTTP, LAN only):
+Endpoints (LAN only):
   GET  /usage    -> {"claude": {"session": {...}, "week": {...}}, "codex": {...}}
   POST /control  -> {"target": "claude", "action": "focus" | "enter" | "esc"}
+  UDP 8788       -> automatic companion discovery when the computer IP changes
 
 Usage sources (best effort, cached 60 s):
   * Claude: Claude Code OAuth credentials (~/.claude/.credentials.json)
@@ -33,6 +34,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 PORT = 8787
+DISCOVERY_PORT = 8788
+DISCOVERY_REQUEST = b"STOPWATCH_DISCOVER_V1"
+DISCOVERY_RESPONSE = f"STOPWATCH_COMPANION_V1 {PORT}".encode("ascii")
 CACHE_SECONDS = 60
 OVERRIDE_FILE = Path(__file__).with_name("usage_override.json")
 
@@ -319,8 +323,34 @@ def handle_control(target: str, action: str) -> bool:
 
 
 # --------------------------------------------------------------------------
-# HTTP server
+# LAN discovery + HTTP server
 # --------------------------------------------------------------------------
+
+
+def discovery_worker() -> None:
+    try:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("0.0.0.0", DISCOVERY_PORT))
+    except OSError as error:
+        _log(f"cannot listen on UDP {DISCOVERY_PORT}: {error}")
+        return
+
+    _log(f"automatic discovery listening on UDP {DISCOVERY_PORT}")
+    with listener:
+        while True:
+            try:
+                payload, peer = listener.recvfrom(128)
+                if payload.strip() != DISCOVERY_REQUEST:
+                    continue
+                listener.sendto(DISCOVERY_RESPONSE, peer)
+                _log(f"discovery reply sent to {peer[0]}:{peer[1]}")
+            except OSError as error:
+                _log(f"discovery receive failed: {error}")
+                time.sleep(1)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -396,6 +426,7 @@ def main() -> None:
         _log(f"cannot listen on TCP {PORT}: {error}; another companion may already be running")
         return
     threading.Thread(target=usage_worker, name="usage-refresh", daemon=True).start()
+    threading.Thread(target=discovery_worker, name="lan-discovery", daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
