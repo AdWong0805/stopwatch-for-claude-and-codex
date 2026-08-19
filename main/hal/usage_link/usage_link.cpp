@@ -16,22 +16,30 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <lwip/inet.h>
+#include <lwip/sockets.h>
 #include <nvs_flash.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <unistd.h>
 
 namespace usage_link {
 
 namespace {
 
-constexpr const char* Tag           = "UsageLink";
-constexpr const char* SettingsNs    = "usagelink";
-constexpr uint32_t PollIntervalMs   = 30000;
-constexpr uint32_t RetryIntervalMs  = 10000;
-constexpr uint32_t HttpTimeoutMs    = 5000;
-constexpr std::size_t ResponseLimit = 2048;
+constexpr const char* Tag                = "UsageLink";
+constexpr const char* SettingsNs         = "usagelink";
+constexpr uint32_t PollIntervalMs        = 30000;
+constexpr uint32_t RetryIntervalMs       = 10000;
+constexpr uint32_t HttpTimeoutMs         = 5000;
+constexpr std::size_t ResponseLimit      = 2048;
+constexpr uint16_t DiscoveryPort         = 8788;
+constexpr uint32_t DiscoveryTimeoutMs    = 1500;
+constexpr const char* DiscoveryRequest   = "STOPWATCH_DISCOVER_V1";
+constexpr const char* DiscoveryResponse  = "STOPWATCH_COMPANION_V1";
 
 struct ActionRequest {
     char target[12];
@@ -60,6 +68,7 @@ private:
 
     void run();
     bool pollUsage();
+    bool discoverCompanion();
     bool postAction(const ActionRequest& request);
     bool httpRequest(const char* path, const char* postBody, char* response, std::size_t responseCapacity);
     void parseUsageJson(const char* json);
@@ -228,11 +237,18 @@ bool UsageLinkImpl::requestAction(const char* target, const char* action)
 
 bool UsageLinkImpl::copyCompanionHost(char* host, std::size_t capacity) const
 {
-    if (!_configured || !_got_ip || host == nullptr || capacity == 0 || _host[0] == '\0') {
+    if (!_configured || !_got_ip || host == nullptr || capacity == 0 || _state_mutex == nullptr) {
         return false;
     }
-    std::snprintf(host, capacity, "%s", _host);
-    return true;
+    if (xSemaphoreTake(_state_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return false;
+    }
+    const bool available = _host[0] != '\0';
+    if (available) {
+        std::snprintf(host, capacity, "%s", _host);
+    }
+    xSemaphoreGive(_state_mutex);
+    return available;
 }
 
 /* --------------------------------- worker ---------------------------------- */
@@ -270,12 +286,97 @@ bool UsageLinkImpl::pollUsage()
 {
     static char response[ResponseLimit];
     if (!httpRequest("/usage", nullptr, response, sizeof(response))) {
+        if (discoverCompanion() && httpRequest("/usage", nullptr, response, sizeof(response))) {
+            parseUsageJson(response);
+            return true;
+        }
         xSemaphoreTake(_state_mutex, portMAX_DELAY);
         _state.linkOk = false;
         xSemaphoreGive(_state_mutex);
         return false;
     }
     parseUsageJson(response);
+    return true;
+}
+
+bool UsageLinkImpl::discoverCompanion()
+{
+    const int socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_fd < 0) {
+        ESP_LOGW(Tag, "discovery socket creation failed: errno=%d", errno);
+        return false;
+    }
+
+    const int broadcast_enabled = 1;
+    setsockopt(socket_fd, SOL_SOCKET, SO_BROADCAST, &broadcast_enabled, sizeof(broadcast_enabled));
+    timeval timeout = {
+        .tv_sec  = static_cast<time_t>(DiscoveryTimeoutMs / 1000),
+        .tv_usec = static_cast<suseconds_t>((DiscoveryTimeoutMs % 1000) * 1000),
+    };
+    setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    sockaddr_in destination     = {};
+    destination.sin_family      = AF_INET;
+    destination.sin_port        = htons(DiscoveryPort);
+    destination.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+
+    const auto send_discovery = [&](uint32_t address) {
+        destination.sin_addr.s_addr = address;
+        return sendto(socket_fd, DiscoveryRequest, std::strlen(DiscoveryRequest), 0,
+                      reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
+    };
+
+    bool sent_to_current_subnet   = false;
+    esp_netif_t* station          = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip_info   = {};
+    if (station != nullptr && esp_netif_get_ip_info(station, &ip_info) == ESP_OK) {
+        const uint32_t directed_broadcast = ip_info.ip.addr | ~ip_info.netmask.addr;
+        send_discovery(directed_broadcast);
+        sent_to_current_subnet = true;
+    }
+    if (!sent_to_current_subnet) {
+        send_discovery(htonl(INADDR_BROADCAST));
+    }
+
+    char response[64]       = {};
+    sockaddr_in source      = {};
+    socklen_t source_length = sizeof(source);
+    const int received = recvfrom(socket_fd, response, sizeof(response) - 1, 0,
+                                  reinterpret_cast<sockaddr*>(&source), &source_length);
+    close(socket_fd);
+    if (received <= 0) {
+        ESP_LOGW(Tag, "companion discovery timed out");
+        return false;
+    }
+    response[received] = '\0';
+
+    unsigned discovered_port = 0;
+    char protocol[40]         = {};
+    if (std::sscanf(response, "%39s %u", protocol, &discovered_port) != 2 ||
+        std::strcmp(protocol, DiscoveryResponse) != 0 || discovered_port == 0 || discovered_port > 65535) {
+        ESP_LOGW(Tag, "ignored invalid discovery response: %s", response);
+        return false;
+    }
+
+    char discovered_host[INET_ADDRSTRLEN] = {};
+    if (inet_ntop(AF_INET, &source.sin_addr, discovered_host, sizeof(discovered_host)) == nullptr) {
+        return false;
+    }
+
+    bool changed = false;
+    xSemaphoreTake(_state_mutex, portMAX_DELAY);
+    if (std::strcmp(_host, discovered_host) != 0 || _port != discovered_port) {
+        std::snprintf(_host, sizeof(_host), "%s", discovered_host);
+        _port   = static_cast<uint16_t>(discovered_port);
+        changed = true;
+    }
+    xSemaphoreGive(_state_mutex);
+
+    if (changed) {
+        setHostConfig(discovered_host, static_cast<uint16_t>(discovered_port));
+    }
+    ESP_LOGI(Tag, "companion discovered at %s:%u%s", discovered_host, discovered_port,
+             changed ? " and saved" : "");
     return true;
 }
 
