@@ -85,13 +85,22 @@ void AppCodexMicro::onRunning()
 
     bool mic_view_changed = false;
     if (codex_input::hasKeyEvent(event, codex_input::KeyEvent::MicPress) && state.connected) {
-        _mic_watch_active = GetStopWatchMicBridge().start();
-        if (!_mic_watch_active) {
-            // Keep the original computer-microphone behavior as a fallback
-            // when Wi-Fi has not been configured or is temporarily offline.
-            _mic_host_active = GetCodexMicroBle().sendKey(CodexMicroControl::Mic, CodexMicroKeyAction::Press);
+        StopWatchMicBridge& mic_bridge = GetStopWatchMicBridge();
+        if (mic_bridge.busy()) {
+            // A released recording can remain busy while VoiceBridge is
+            // transcribing it. Do not start the computer microphone on a
+            // second press, otherwise both input paths overlap.
+            ESP_LOGW(Tag, "mic press ignored while watch transcription is busy");
+        } else {
+            _mic_watch_active = mic_bridge.start();
+            if (!_mic_watch_active) {
+                // Keep the original computer-microphone behavior as a fallback
+                // when Wi-Fi has not been configured or is temporarily offline.
+                _mic_host_active =
+                    GetCodexMicroBle().sendKey(CodexMicroControl::Mic, CodexMicroKeyAction::Press);
+            }
+            mic_view_changed = true;
         }
-        mic_view_changed = true;
     }
     if (codex_input::hasKeyEvent(event, codex_input::KeyEvent::SendPress) && state.connected) {
         _send_host_active = GetCodexMicroBle().sendKey(CodexMicroControl::Send, CodexMicroKeyAction::Press);
