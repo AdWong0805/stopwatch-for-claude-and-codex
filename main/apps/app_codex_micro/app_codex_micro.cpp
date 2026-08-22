@@ -90,7 +90,7 @@ void AppCodexMicro::onRunning()
             // A released recording can remain busy while VoiceBridge is
             // transcribing it. Do not start the computer microphone on a
             // second press, otherwise both input paths overlap.
-            ESP_LOGW(Tag, "mic press ignored while watch transcription is busy");
+            ESP_LOGW("CodexRemote", "mic press ignored while watch transcription is busy");
         } else {
             _mic_watch_active = mic_bridge.start();
             if (!_mic_watch_active) {
