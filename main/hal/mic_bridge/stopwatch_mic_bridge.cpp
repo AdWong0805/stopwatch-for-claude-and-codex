@@ -9,6 +9,7 @@
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/task.h>
 #include <lwip/netdb.h>
 #include <lwip/sockets.h>
@@ -84,12 +85,17 @@ bool StopWatchMicBridge::start()
     _state.store(State::Recording);
     GetHAL().setMicrophoneMeterExternal(true);
     GetHAL().setMicrophoneLevel(0.0f);
-    const BaseType_t created = xTaskCreatePinnedToCore(
-        &StopWatchMicBridge::taskEntry, "watch_mic", 6144, this, 4, nullptr, 0);
+    // The Codex Remote view leaves internal RAM fragmented enough that a 6 KiB
+    // contiguous task stack is not reliably available. This worker does not
+    // perform flash/NVS operations, so its stack can safely live in PSRAM.
+    const BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
+        &StopWatchMicBridge::taskEntry, "watch_mic", 6144, this, 4, nullptr, 0,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (created != pdPASS) {
-        ESP_LOGE(Tag, "task creation failed: internal_free=%u largest=%u",
+        ESP_LOGE(Tag, "task creation failed: internal_free=%u largest=%u psram_free=%u",
                  static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
-                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)));
         GetHAL().setMicrophoneMeterExternal(false);
         _busy.store(false);
         _state.store(State::Error);
@@ -119,7 +125,7 @@ StopWatchMicBridge::State StopWatchMicBridge::state() const
 void StopWatchMicBridge::taskEntry(void* context)
 {
     static_cast<StopWatchMicBridge*>(context)->run();
-    vTaskDelete(nullptr);
+    vTaskDeleteWithCaps(nullptr);
 }
 
 void StopWatchMicBridge::run()
